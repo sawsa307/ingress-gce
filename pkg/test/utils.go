@@ -273,6 +273,8 @@ func CreateAndInsertNodes(gce *gce.Cloud, nodeNames []string, zoneName string) (
 				},
 				Spec: api_v1.NodeSpec{
 					ProviderID: fmt.Sprintf("gce://foo-project/%s/%s", zoneName, name),
+					PodCIDR:    "10.100.1.0/24",
+					PodCIDRs:   []string{"10.100.1.0/24"},
 				},
 				Status: api_v1.NodeStatus{
 					NodeInfo: api_v1.NodeSystemInfo{
