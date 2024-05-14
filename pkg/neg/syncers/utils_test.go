@@ -495,7 +495,7 @@ func TestToZoneNetworkEndpointMap(t *testing.T) {
 	t.Parallel()
 	nodeInformer := zonegetter.FakeNodeInformer()
 	zonegetter.PopulateFakeNodeInformer(nodeInformer)
-	zoneGetter := zonegetter.NewZoneGetter(nodeInformer, defaultTestSubnetURL)
+	zoneGetter := zonegetter.NewFakeZoneGetter(nodeInformer)
 	podLister := negtypes.NewTestContext().PodInformer.GetIndexer()
 	testEndpointSlice := getDefaultEndpointSlices()
 	addPodsToLister(podLister, testEndpointSlice)
@@ -752,7 +752,7 @@ func TestValidateEndpointFields(t *testing.T) {
 	t.Parallel()
 	nodeInformer := zonegetter.FakeNodeInformer()
 	zonegetter.PopulateFakeNodeInformer(nodeInformer)
-	zoneGetter := zonegetter.NewZoneGetter(nodeInformer, defaultTestSubnetURL)
+	zoneGetter := zonegetter.NewFakeZoneGetter(nodeInformer)
 	podLister := negtypes.NewTestContext().PodInformer.GetIndexer()
 	addPodsToLister(podLister, getDefaultEndpointSlices())
 
@@ -1108,7 +1108,7 @@ func TestValidateEndpointFields(t *testing.T) {
 func TestRetrieveExistingZoneNetworkEndpointMap(t *testing.T) {
 	nodeInformer := zonegetter.FakeNodeInformer()
 	zonegetter.PopulateFakeNodeInformer(nodeInformer)
-	zoneGetter := zonegetter.NewZoneGetter(nodeInformer, defaultTestSubnetURL)
+	zoneGetter := zonegetter.NewFakeZoneGetter(nodeInformer)
 	negCloud := negtypes.NewFakeNetworkEndpointGroupCloud("test-subnetwork", "test-network")
 	negName := "test-neg-name"
 	irrelevantNegName := "irrelevant"
@@ -1924,7 +1924,7 @@ func TestToZoneNetworkEndpointMapDegradedMode(t *testing.T) {
 
 	nodeInformer := zonegetter.FakeNodeInformer()
 	zonegetter.PopulateFakeNodeInformer(nodeInformer)
-	fakeZoneGetter := zonegetter.NewZoneGetter(nodeInformer, defaultTestSubnetURL)
+	fakeZoneGetter := zonegetter.NewFakeZoneGetter(nodeInformer)
 	testContext := negtypes.NewTestContext()
 	podLister := testContext.PodInformer.GetIndexer()
 	addPodsToLister(podLister, getDefaultEndpointSlices())
@@ -2072,7 +2072,7 @@ func TestDegradedModeValidateEndpointInfo(t *testing.T) {
 	instance4 := negtypes.TestInstance4
 	nodeInformer := zonegetter.FakeNodeInformer()
 	zonegetter.PopulateFakeNodeInformer(nodeInformer)
-	fakeZoneGetter := zonegetter.NewZoneGetter(nodeInformer, defaultTestSubnetURL)
+	fakeZoneGetter := zonegetter.NewFakeZoneGetter(nodeInformer)
 	testContext := negtypes.NewTestContext()
 	podLister := testContext.PodInformer.GetIndexer()
 	addPodsToLister(podLister, getDefaultEndpointSlices())
