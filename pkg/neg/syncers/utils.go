@@ -285,8 +285,12 @@ func toZoneNetworkEndpointMap(eds []negtypes.EndpointsData, zoneGetter *zonegett
 			globalEPCount[negtypes.Total] += 1
 			zone, _, getZoneErr := getEndpointZone(endpointAddress, zoneGetter, logger)
 			if getZoneErr != nil {
-				epLogger.Error(getZoneErr, "Detected unexpected error when getting zone for endpoint")
 				metrics.PublishNegControllerErrorCountMetrics(getZoneErr, true)
+				if errors.Is(getZoneErr, zonegetter.ErrNodeNotInDefaultSubnet) {
+					epLogger.Error(getZoneErr, "Detected endpoint not from default subnet. Skipping")
+					continue
+				}
+				epLogger.Error(getZoneErr, "Detected unexpected error when getting zone for endpoint")
 				return ZoneNetworkEndpointMapResult{}, fmt.Errorf("unexpected error when getting zone for endpoint %q in endpoint slice %s/%s: %w", endpointAddress.Addresses, ed.Meta.Namespace, ed.Meta.Name, getZoneErr)
 			}
 
@@ -372,6 +376,10 @@ func getEndpointZone(endpointAddress negtypes.AddressData, zoneGetter *zonegette
 		return "", count, negtypes.ErrEPNodeMissing
 	}
 	zone, err := zoneGetter.ZoneForNode(*endpointAddress.NodeName, logger)
+	if errors.Is(err, zonegetter.ErrNodeNotInDefaultSubnet) {
+		count[negtypes.NodeInNonDefaultSubnet]++
+		return "", count, fmt.Errorf("%w: node %v is in the non-default subnet", err, *endpointAddress.NodeName)
+	}
 	// Fail to get the node object.
 	if errors.Is(err, zonegetter.ErrNodeNotFound) {
 		count[negtypes.NodeNotFound]++
@@ -458,8 +466,13 @@ func toZoneNetworkEndpointMapDegradedMode(eds []negtypes.EndpointsData, zoneGett
 			}
 			zone, getZoneErr := zoneGetter.ZoneForNode(nodeName, logger)
 			if getZoneErr != nil {
-				epLogger.Error(getZoneErr, "Endpoint's corresponding node does not have valid zone information, skipping", "nodeName", nodeName)
 				metrics.PublishNegControllerErrorCountMetrics(getZoneErr, true)
+				if errors.Is(getZoneErr, zonegetter.ErrNodeNotInDefaultSubnet) {
+					epLogger.Error(getZoneErr, "Detected endpoint not from default subnet. Skipping", "nodeName", nodeName)
+					localEPCount[negtypes.NodeInNonDefaultSubnet]++
+					continue
+				}
+				epLogger.Error(getZoneErr, "Endpoint's corresponding node does not have valid zone information, skipping", "nodeName", nodeName)
 				localEPCount[negtypes.NodeNotFound]++
 				continue
 			}

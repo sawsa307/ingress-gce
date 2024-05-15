@@ -46,7 +46,12 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const defaultTestSubnetURL = "https://www.googleapis.com/compute/v1/projects/proj/regions/us-central1/subnetworks/default"
+const (
+	defaultTestSubnetURL = "https://www.googleapis.com/compute/v1/projects/proj/regions/us-central1/subnetworks/default"
+
+	defaultTestSubnet    = "default"
+	nonDefaultTestSubnet = "non-default"
+)
 
 func TestEncodeDecodeEndpoint(t *testing.T) {
 	ip := "10.0.0.10"
@@ -1718,6 +1723,7 @@ func TestValidateEndpointFields(t *testing.T) {
 	emptyZonePod := "empty-zone-pod" // This should map to emptyZoneInstance.
 	notExistInstance := negtypes.TestNotExistInstance
 
+	nonDefaultSubnetInstance := negtypes.TestNonDefaultSubnetInstance
 	nodeInformer := zonegetter.FakeNodeInformer()
 	zonegetter.PopulateFakeNodeInformer(nodeInformer)
 	fakeZoneGetter := zonegetter.NewFakeZoneGetter(nodeInformer)
@@ -1747,10 +1753,14 @@ func TestValidateEndpointFields(t *testing.T) {
 		},
 	})
 
+	nodeTestLabel := map[string]string{
+		utils.LabelNodeSubnet: defaultTestSubnet,
+	}
 	nodeLister := testContext.NodeInformer.GetIndexer()
 	nodeLister.Add(&v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: instance1,
+			Name:   instance1,
+			Labels: nodeTestLabel,
 		},
 		Spec: v1.NodeSpec{
 			PodCIDR:  "10.100.1.0/24",
@@ -1759,7 +1769,8 @@ func TestValidateEndpointFields(t *testing.T) {
 	})
 	nodeLister.Add(&v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: instance2,
+			Name:   instance2,
+			Labels: nodeTestLabel,
 		},
 		Spec: v1.NodeSpec{
 			PodCIDR:  "10.100.2.0/24",
@@ -1768,7 +1779,8 @@ func TestValidateEndpointFields(t *testing.T) {
 	})
 	nodeLister.Add(&v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: instance3,
+			Name:   instance3,
+			Labels: nodeTestLabel,
 		},
 		Spec: v1.NodeSpec{
 			PodCIDR:  "10.100.3.0/24",
@@ -1777,7 +1789,8 @@ func TestValidateEndpointFields(t *testing.T) {
 	})
 	nodeLister.Add(&v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: instance4,
+			Name:   instance4,
+			Labels: nodeTestLabel,
 		},
 		Spec: v1.NodeSpec{
 			PodCIDR:  "10.100.4.0/24",
@@ -1794,7 +1807,18 @@ func TestValidateEndpointFields(t *testing.T) {
 		},
 	})
 
-	testLabels := map[string]string{
+	nodeLister.Add(&v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   nonDefaultSubnetInstance,
+			Labels: nodeTestLabel,
+		},
+		Spec: v1.NodeSpec{
+			PodCIDR:  "10.100.5.0/24",
+			PodCIDRs: []string{"a:b::/48", "10.100.5.0/24"},
+		},
+	})
+
+	serviceTestSelector := map[string]string{
 		"run": "foo",
 	}
 	serviceLister := testContext.ServiceInformer.GetIndexer()
@@ -1804,7 +1828,7 @@ func TestValidateEndpointFields(t *testing.T) {
 			Name:      testServiceName,
 		},
 		Spec: v1.ServiceSpec{
-			Selector: testLabels,
+			Selector: serviceTestSelector,
 		},
 	})
 
