@@ -1179,6 +1179,7 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 			expectZones := sets.NewString(negtypes.TestZone1, negtypes.TestZone2, negtypes.TestZone4)
 
 			var expectedNegRefs map[string]negv1beta1.NegObjectReference
+			var err error
 			if tc.negExists {
 				for zone := range expectZones {
 					fakeCloud.CreateNetworkEndpointGroup(&composite.NetworkEndpointGroup{
@@ -1190,8 +1191,10 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 						Description:         tc.negDesc,
 					}, zone, klog.TODO())
 				}
-				ret, _ := fakeCloud.AggregatedListNetworkEndpointGroup(syncer.NegSyncerKey.GetAPIVersion(), klog.TODO())
-				expectedNegRefs = negObjectReferences(ret)
+				expectedNegRefs, err = negObjectReferences(fakeCloud, negv1beta1.ActiveState, expectZones)
+				if err != nil {
+					t.Errorf("Failed to get negObjRef from NEG CR: %v", err)
+				}
 			}
 			var refs []negv1beta1.NegObjectReference
 			if tc.crStatusPopulated {
@@ -1222,16 +1225,19 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 			if err != nil {
 				t.Errorf("Failed to get NEG from neg client: %s", err)
 			}
-			ret, _ := fakeCloud.AggregatedListNetworkEndpointGroup(syncer.NegSyncerKey.GetAPIVersion(), klog.TODO())
 			if !tc.expectErr {
-				expectedNegRefs = negObjectReferences(ret)
+				expectedNegRefs, err = negObjectReferences(fakeCloud, negv1beta1.ActiveState, expectZones)
+				if err != nil {
+					t.Errorf("Failed to get negObjRef from NEG CR: %v", err)
+				}
 			}
 			// if error occurs, expect that neg object references are not populated
 			if tc.expectErr && !tc.crStatusPopulated {
 				expectedNegRefs = nil
 			}
 
-			checkNegCR(t, negCR, creationTS, expectZones, expectedNegRefs, false, tc.expectErr)
+			expectPopulated := !tc.expectErr || tc.crStatusPopulated
+			checkNegCR(t, negCR, creationTS, expectZones, nil, expectPopulated, false, fakeCloud)
 			if tc.expectErr && tc.expectNoopOnNegStatus {
 				// If CR is populated, we should have initialized and synced condition
 				var expectedConditionLen int
@@ -1264,6 +1270,7 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 			// Verify the NEGs are created as expected
 			retZones := sets.NewString()
 
+			ret, _ := fakeCloud.AggregatedListNetworkEndpointGroup(syncer.NegSyncerKey.GetAPIVersion(), klog.TODO())
 			for key, neg := range ret {
 				retZones.Insert(key.Zone)
 				if neg.Name != testNegName {
@@ -1285,6 +1292,127 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 		syncer.cloud.DeleteNetworkEndpointGroup(testNegName, negtypes.TestZone3, syncer.NegSyncerKey.GetAPIVersion(), klog.TODO())
 		syncer.cloud.DeleteNetworkEndpointGroup(testNegName, negtypes.TestZone4, syncer.NegSyncerKey.GetAPIVersion(), klog.TODO())
 
+	}
+}
+
+func TestUpdateInitStatus(t *testing.T) {
+	t.Parallel()
+	testNetwork := cloud.ResourcePath("network", &meta.Key{Name: "test-network"})
+	testSubnetwork := cloud.ResourcePath("subnetwork", &meta.Key{Name: "test-subnetwork"})
+	testNegType := negtypes.VmIpPortEndpointType
+
+	// Active zones: zone1, zone2.
+	// Inactive zones: zone3
+	initialActiveZones := sets.NewString(negtypes.TestZone1, negtypes.TestZone2)
+	initialInactiveZones := sets.NewString(negtypes.TestZone3)
+
+	testCases := []struct {
+		desc                 string
+		updatedActiveZones   sets.String
+		updatedInactiveZones sets.String
+	}{
+		{
+			desc:                 "Add a new zone zone4, an additional NEG ref should be added to NEG CR with ACTIVE status",
+			updatedActiveZones:   sets.NewString(negtypes.TestZone1, negtypes.TestZone2, negtypes.TestZone4),
+			updatedInactiveZones: sets.NewString(negtypes.TestZone3),
+		},
+		{
+			desc:                 "Removed an ACTIVE zone zone3, corresponding NEG ref should still in NEG CR but with INACTIVE status",
+			updatedActiveZones:   sets.NewString(negtypes.TestZone1),
+			updatedInactiveZones: sets.NewString(negtypes.TestZone2, negtypes.TestZone3),
+		},
+		{
+			desc:               "Add back an INACTIVE zone zone3, the NEG ref in this zone should become ACTIVE in NEG CR",
+			updatedActiveZones: sets.NewString(negtypes.TestZone1, negtypes.TestZone2, negtypes.TestZone3),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+
+			fakeCloud := negtypes.NewFakeNetworkEndpointGroupCloud(testSubnetwork, testNetwork)
+			_, syncer := newTestTransactionSyncer(fakeCloud, testNegType, false)
+			svcNegClient := syncer.svcNegClient
+
+			// Create initial NEGs, and get their Object Ref to be used in NEG CR.
+			var initialNegRefs []negv1beta1.NegObjectReference
+			for zone := range initialActiveZones.Union(initialInactiveZones) {
+				err := fakeCloud.CreateNetworkEndpointGroup(&composite.NetworkEndpointGroup{
+					Version:             syncer.NegSyncerKey.GetAPIVersion(),
+					Name:                testNegName,
+					NetworkEndpointType: string(syncer.NegSyncerKey.NegType),
+					Network:             fakeCloud.NetworkURL(),
+					Subnetwork:          fakeCloud.SubnetworkURL(),
+				}, zone, klog.TODO())
+				if err != nil {
+					t.Fatalf("Failed to create NEG %s in zone %s: %v", testNegName, zone, err)
+				}
+				neg, err := fakeCloud.GetNetworkEndpointGroup(testNegName, zone, meta.VersionGA, klog.TODO())
+				if err != nil {
+					t.Fatalf("Failed to get NEG %s in zone %s: %v", testNegName, zone, err)
+				}
+				negRef := negv1beta1.NegObjectReference{
+					Id:                  fmt.Sprint(neg.Id),
+					SelfLink:            neg.SelfLink,
+					NetworkEndpointType: negv1beta1.NetworkEndpointType(neg.NetworkEndpointType),
+					State:               negv1beta1.ActiveState,
+					SubnetURL:           neg.Subnetwork,
+				}
+				if initialInactiveZones.Has(zone) {
+					negRef.State = negv1beta1.InactiveState
+				}
+				initialNegRefs = append(initialNegRefs, negRef)
+			}
+
+			// Create NEG CR.
+			creationTS := v1.Now()
+			origCR := createNegCR(testNegName, creationTS, true, true, initialNegRefs)
+			svcNeg, err := svcNegClient.NetworkingV1beta1().ServiceNetworkEndpointGroups(testServiceNamespace).Create(context2.Background(), origCR, v1.CreateOptions{})
+			if err != nil {
+				t.Errorf("Failed to create test NEG CR: %s", err)
+			}
+			syncer.svcNegLister.Add(svcNeg)
+
+			// Create a NEG in a new zone if zone expanded.
+			addedZones := tc.updatedActiveZones.Difference(initialActiveZones.Union(initialInactiveZones))
+			if addedZones != nil {
+				for zone := range addedZones {
+					err := fakeCloud.CreateNetworkEndpointGroup(&composite.NetworkEndpointGroup{
+						Version:             syncer.NegSyncerKey.GetAPIVersion(),
+						Name:                testNegName,
+						NetworkEndpointType: string(syncer.NegSyncerKey.NegType),
+						Network:             fakeCloud.NetworkURL(),
+						Subnetwork:          fakeCloud.SubnetworkURL(),
+					}, zone, klog.TODO())
+					if err != nil {
+						t.Fatalf("Failed to create NEG %s in zone %s: %v", testNegName, zone, err)
+					}
+				}
+			}
+
+			// This is the input list to updateInitStatus().
+			// It should only include NEG ref in the active zones.
+			var activeNegList []negv1beta1.NegObjectReference
+			for zone := range tc.updatedActiveZones {
+				neg, err := fakeCloud.GetNetworkEndpointGroup(testNegName, zone, meta.VersionGA, klog.TODO())
+				if err != nil {
+					t.Fatalf("Failed to get NEG %s in zone %s: %v", testNegName, zone, err)
+				}
+				negRef := getNegObjectReference(neg, negv1beta1.ActiveState)
+				activeNegList = append(activeNegList, negRef)
+			}
+
+			// Inactive NEG refs should be added if there is any.
+			syncer.updateInitStatus(activeNegList, nil)
+
+			negCR, err := svcNegClient.NetworkingV1beta1().ServiceNetworkEndpointGroups(testServiceNamespace).Get(context2.Background(), testNegName, v1.GetOptions{})
+			if err != nil {
+				t.Errorf("Failed to create test NEG CR: %s", err)
+			}
+
+			checkNegCR(t, negCR, creationTS, tc.updatedActiveZones, tc.updatedInactiveZones, true, false, fakeCloud)
+		})
 	}
 }
 
@@ -1481,8 +1609,11 @@ func TestIsZoneChange(t *testing.T) {
 					Subnetwork:          fakeCloud.SubnetworkURL(),
 				}, zone, klog.TODO())
 			}
-			ret, _ := fakeCloud.AggregatedListNetworkEndpointGroup(syncer.NegSyncerKey.GetAPIVersion(), klog.TODO())
-			negRefMap := negObjectReferences(ret)
+			negRefMap, err := negObjectReferences(fakeCloud, negv1beta1.ActiveState, sets.NewString(origZones...))
+			if err != nil {
+				t.Errorf("Failed to get negObjRef from NEG CR: %v", err)
+			}
+
 			var refs []negv1beta1.NegObjectReference
 			for _, neg := range negRefMap {
 				refs = append(refs, neg)
@@ -2453,17 +2584,28 @@ func waitForTransactions(syncer *transactionSyncer) error {
 }
 
 // negObjectReferences returns objectReferences for NEG CRs from NEG Objects
-func negObjectReferences(negs map[*meta.Key]*composite.NetworkEndpointGroup) map[string]negv1beta1.NegObjectReference {
-
+func negObjectReferences(cloud negtypes.NetworkEndpointGroupCloud, state negv1beta1.NegState, zones sets.String) (map[string]negv1beta1.NegObjectReference, error) {
 	negObjs := make(map[string]negv1beta1.NegObjectReference)
-	for _, neg := range negs {
-		negObjs[neg.SelfLink] = negv1beta1.NegObjectReference{
-			Id:                  fmt.Sprint(neg.Id),
-			SelfLink:            neg.SelfLink,
-			NetworkEndpointType: negv1beta1.NetworkEndpointType(neg.NetworkEndpointType),
+	for zone := range zones {
+		neg, err := cloud.GetNetworkEndpointGroup(testNegName, zone, meta.VersionGA, klog.TODO())
+		if err != nil {
+			return nil, err
 		}
+		negRef := getNegObjectReference(neg, state)
+		negObjs[neg.SelfLink] = negRef
 	}
-	return negObjs
+	return negObjs, nil
+}
+
+// getNegObjectReference returns objectReference for NEG CRs from NEG Object
+func getNegObjectReference(neg *composite.NetworkEndpointGroup, negState negv1beta1.NegState) negv1beta1.NegObjectReference {
+	return negv1beta1.NegObjectReference{
+		Id:                  fmt.Sprint(neg.Id),
+		SelfLink:            neg.SelfLink,
+		NetworkEndpointType: negv1beta1.NetworkEndpointType(neg.NetworkEndpointType),
+		State:               negState,
+		SubnetURL:           neg.Subnetwork,
+	}
 }
 
 // checks the NEG Description on the cloud NEG Object and verifies with expected
@@ -2562,11 +2704,30 @@ func createNegCR(testNegName string, creationTS metav1.Time, populateInitialized
 }
 
 // checkNegCR validates the NegObjectReferences and the LastSyncTime. It will not validate the conditions fields but ensures at most 2 conditions exist
-func checkNegCR(t *testing.T, negCR *negv1beta1.ServiceNetworkEndpointGroup, previousLastSyncTime metav1.Time, expectZones sets.String, expectedNegRefs map[string]negv1beta1.NegObjectReference, expectSyncTimeUpdate, expectErr bool) {
+func checkNegCR(t *testing.T, negCR *negv1beta1.ServiceNetworkEndpointGroup, previousLastSyncTime metav1.Time, activeZones, inactiveZones sets.String, expectNegCrPopulated, expectSyncTimeUpdate bool, cloud negtypes.NetworkEndpointGroupCloud) {
 	if expectSyncTimeUpdate && !previousLastSyncTime.Before(&negCR.Status.LastSyncTime) {
 		t.Errorf("Expected Neg CR to have an updated LastSyncTime")
 	} else if !expectSyncTimeUpdate && !negCR.Status.LastSyncTime.IsZero() && !previousLastSyncTime.Equal(&negCR.Status.LastSyncTime) {
 		t.Errorf("Expected Neg CR to not have an updated LastSyncTime")
+	}
+
+	expectedNegRefs := make(map[string]negv1beta1.NegObjectReference)
+
+	if expectNegCrPopulated {
+		ret, err := negObjectReferences(cloud, negv1beta1.ActiveState, activeZones)
+		if err != nil {
+			t.Fatalf("Failed to get negObjRef: %v", err)
+		}
+		for k, v := range ret {
+			expectedNegRefs[k] = v
+		}
+		ret, err = negObjectReferences(cloud, negv1beta1.InactiveState, inactiveZones)
+		if err != nil {
+			t.Fatalf("Failed to get negObjRef: %v", err)
+		}
+		for k, v := range ret {
+			expectedNegRefs[k] = v
+		}
 	}
 
 	var foundNegObjs []string
