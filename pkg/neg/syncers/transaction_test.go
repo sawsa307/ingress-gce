@@ -1042,12 +1042,13 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 	testNegType := negtypes.VmIpPortEndpointType
 
 	testCases := []struct {
-		desc              string
-		negExists         bool
-		negDesc           string
-		crStatusPopulated bool
-		customName        bool
-		expectErr         bool
+		desc                  string
+		negExists             bool
+		negDesc               string
+		crStatusPopulated     bool
+		customName            bool
+		expectErr             bool
+		expectNoopOnNegStatus bool
 	}{
 		{
 			desc:              "Neg does not exist",
@@ -1064,12 +1065,13 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 			expectErr:         false,
 		},
 		{
-			desc:              "Neg exists, custom name, without neg description",
-			negExists:         true,
-			negDesc:           "",
-			crStatusPopulated: false,
-			customName:        true,
-			expectErr:         true,
+			desc:                  "Neg exists, custom name, without neg description",
+			negExists:             true,
+			negDesc:               "",
+			crStatusPopulated:     false,
+			customName:            true,
+			expectErr:             true,
+			expectNoopOnNegStatus: true,
 		},
 		{
 			desc:      "Neg exists, cr has with populated status, with correct neg description",
@@ -1103,7 +1105,7 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 			expectErr:         false,
 		},
 		{
-			desc:      "Neg exists, with conflicting cluster id in neg description",
+			desc:      "Neg exists, with mismatched cluster id in neg description",
 			negExists: true,
 			negDesc: utils.NegDescription{
 				ClusterUID:  "cluster-2",
@@ -1115,7 +1117,7 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 			expectErr:         true,
 		},
 		{
-			desc:      "Neg exists, with conflicting namespace in neg description",
+			desc:      "Neg exists, with mismatched namespace in neg description",
 			negExists: true,
 			negDesc: utils.NegDescription{
 				ClusterUID:  kubeSystemUID,
@@ -1123,11 +1125,12 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 				ServiceName: testServiceName,
 				Port:        "80",
 			}.String(),
-			crStatusPopulated: false,
-			expectErr:         true,
+			crStatusPopulated:     false,
+			expectErr:             true,
+			expectNoopOnNegStatus: true,
 		},
 		{
-			desc:      "Neg exists, with conflicting service in neg description",
+			desc:      "Neg exists, with mismatched service in neg description",
 			negExists: true,
 			negDesc: utils.NegDescription{
 				ClusterUID:  kubeSystemUID,
@@ -1135,11 +1138,12 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 				ServiceName: "service-2",
 				Port:        "80",
 			}.String(),
-			crStatusPopulated: false,
-			expectErr:         true,
+			crStatusPopulated:     false,
+			expectErr:             true,
+			expectNoopOnNegStatus: true,
 		},
 		{
-			desc:      "Neg exists, with conflicting port in neg description",
+			desc:      "Neg exists, with mismatched port in neg description",
 			negExists: true,
 			negDesc: utils.NegDescription{
 				ClusterUID:  kubeSystemUID,
@@ -1147,8 +1151,9 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 				ServiceName: testServiceName,
 				Port:        "81",
 			}.String(),
-			crStatusPopulated: false,
-			expectErr:         true,
+			crStatusPopulated:     false,
+			expectErr:             true,
+			expectNoopOnNegStatus: true,
 		},
 		{
 			desc:      "Neg exists, cr has populated status, but error during initialization",
@@ -1158,10 +1163,11 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 				ClusterUID:  kubeSystemUID,
 				Namespace:   testServiceNamespace,
 				ServiceName: testServiceName,
-				Port:        "81",
+				Port:        "81", // Expected port to be 80
 			}.String(),
-			crStatusPopulated: true,
-			expectErr:         true,
+			crStatusPopulated:     true,
+			expectErr:             true,
+			expectNoopOnNegStatus: true,
 		},
 	}
 
@@ -1207,7 +1213,8 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 			err = syncer.ensureNetworkEndpointGroups()
 			if !tc.expectErr && err != nil {
 				t.Errorf("Expected no error, but got: %v", err)
-			} else if tc.expectErr && err == nil {
+			}
+			if tc.expectErr && err == nil {
 				t.Errorf("Expected error, but got none")
 			}
 
@@ -1216,7 +1223,7 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 				t.Errorf("Failed to get NEG from neg client: %s", err)
 			}
 			ret, _ := fakeCloud.AggregatedListNetworkEndpointGroup(syncer.NegSyncerKey.GetAPIVersion(), klog.TODO())
-			if len(expectedNegRefs) == 0 && !tc.expectErr {
+			if !tc.expectErr {
 				expectedNegRefs = negObjectReferences(ret)
 			}
 			// if error occurs, expect that neg object references are not populated
@@ -1225,12 +1232,27 @@ func TestTransactionSyncerWithNegCR(t *testing.T) {
 			}
 
 			checkNegCR(t, negCR, creationTS, expectZones, expectedNegRefs, false, tc.expectErr)
-			if tc.expectErr {
-				// If status is already populated, expect no change even when error occurs
+			if tc.expectErr && tc.expectNoopOnNegStatus {
+				// If CR is populated, we should have initialized and synced condition
+				var expectedConditionLen int
+				if tc.crStatusPopulated {
+					expectedConditionLen = 2
+				}
+
+				if len(negCR.Status.Conditions) != expectedConditionLen {
+					t.Errorf("Expected no change in NEG CR, but got len(negCR.Status.Conditions) = %d", len(negCR.Status.Conditions))
+				}
+				if len(negCR.Status.NetworkEndpointGroups) != len(expectedNegRefs) {
+					t.Errorf("Expected no change in NEG CR, but got len(negCR.Status.NetworkEndpointGroups) = %d", len(negCR.Status.NetworkEndpointGroups))
+				}
+			}
+			if tc.expectErr && !tc.expectNoopOnNegStatus {
 				checkCondition(t, negCR.Status.Conditions, negv1beta1.Initialized, creationTS, corev1.ConditionFalse, true)
-			} else if tc.crStatusPopulated {
+			}
+			if !tc.expectErr && tc.crStatusPopulated {
 				checkCondition(t, negCR.Status.Conditions, negv1beta1.Initialized, creationTS, corev1.ConditionTrue, false)
-			} else {
+			}
+			if !tc.expectErr && !tc.crStatusPopulated {
 				checkCondition(t, negCR.Status.Conditions, negv1beta1.Initialized, creationTS, corev1.ConditionTrue, true)
 			}
 

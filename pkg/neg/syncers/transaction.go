@@ -33,6 +33,7 @@ import (
 	discovery "k8s.io/api/discovery/v1"
 	"k8s.io/ingress-gce/pkg/flags"
 	"k8s.io/ingress-gce/pkg/network"
+	"k8s.io/ingress-gce/pkg/utils"
 	"k8s.io/ingress-gce/pkg/utils/endpointslices"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -423,6 +424,7 @@ func (s *transactionSyncer) ensureNetworkEndpointGroups() error {
 
 	var errList []error
 	var negObjRefs []negv1beta1.NegObjectReference
+	var negCrConflicted, clusterIDConflicted bool
 	negsByLocation := make(map[string]int)
 	for _, zone := range zones {
 		var negObj negv1beta1.NegObjectReference
@@ -445,6 +447,8 @@ func (s *transactionSyncer) ensureNetworkEndpointGroups() error {
 		)
 		if err != nil {
 			errList = append(errList, err)
+			clusterIDConflicted = clusterIDConflicted || errors.Is(err, utils.ErrClusterIDMismatch)
+			negCrConflicted = negCrConflicted || errors.Is(err, ErrNEGNameInUse)
 		}
 
 		if s.svcNegClient != nil && err == nil {
@@ -453,7 +457,12 @@ func (s *transactionSyncer) ensureNetworkEndpointGroups() error {
 		}
 	}
 
-	s.updateInitStatus(negObjRefs, errList)
+	// Do not modify NEG Status if there is conflict within the same cluster
+	// because the CR is owned by a different syncer.
+	if !negCrConflicted || clusterIDConflicted {
+		s.updateInitStatus(negObjRefs, errList)
+	}
+
 	s.syncMetricsCollector.UpdateSyncerNegCount(s.NegSyncerKey, negsByLocation)
 	return utilerrors.NewAggregate(errList)
 }
@@ -773,10 +782,7 @@ func (s *transactionSyncer) updateInitStatus(negObjRefs []negv1beta1.NegObjectRe
 	}
 
 	neg := origNeg.DeepCopy()
-
-	if len(negObjRefs) != 0 {
-		neg.Status.NetworkEndpointGroups = negObjRefs
-	}
+	neg.Status.NetworkEndpointGroups = negObjRefs
 
 	initializedCondition := getInitializedCondition(utilerrors.NewAggregate(errList))
 	finalCondition := ensureCondition(neg, initializedCondition)

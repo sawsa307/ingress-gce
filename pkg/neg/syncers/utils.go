@@ -57,6 +57,8 @@ const (
 	managedByEPSControllerValue = "endpointslice-controller.k8s.io"
 )
 
+var ErrNEGNameInUse = errors.New("NEG name is already in use")
+
 // encodeEndpoint encodes ip and instance into a single string
 func encodeEndpoint(ip, instance, port string) string {
 	return strings.Join([]string{ip, instance, port}, separator)
@@ -150,11 +152,12 @@ func ensureNetworkEndpointGroup(svcNamespace, svcName, negName, zone, negService
 		}
 		if customName && neg.Description == "" {
 			negLogger.Error(nil, "Found Neg with custom name but empty description")
-			return negv1beta1.NegObjectReference{}, fmt.Errorf("neg name %s is already in use, found a custom named neg with an empty description", negName)
+			return negv1beta1.NegObjectReference{}, fmt.Errorf("%w: found a custom named neg %s with an empty description", ErrNEGNameInUse, negName)
 		}
 		if matches, err := utils.VerifyDescription(expectedDesc, neg.Description, negName, zone); !matches {
 			negLogger.Error(err, "Neg Name is already in use")
-			return negv1beta1.NegObjectReference{}, fmt.Errorf("neg name %s is already in use, found conflicting description: %w", negName, err)
+			// Wrap returned error from VerifyDescription() since we need to check if error is ErrClusterIDMismatch.
+			return negv1beta1.NegObjectReference{}, fmt.Errorf("%w: found conflicting description in neg %s: %w", ErrNEGNameInUse, negName, err)
 		}
 
 		if networkEndpointType != negtypes.NonGCPPrivateEndpointType &&

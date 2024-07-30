@@ -18,10 +18,13 @@ package utils
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"k8s.io/klog/v2"
 )
+
+var ErrClusterIDMismatch = errors.New("NEG has mismatched cluster ID")
 
 // Description stores the description for a BackendService.
 type NegDescription struct {
@@ -61,7 +64,14 @@ func VerifyDescription(expectDesc NegDescription, descString, negName, zone stri
 		if err != nil {
 			klog.Warningf("Error unmarshalling Neg Description %s err:%s", negName, err)
 		} else {
-			if desc.ClusterUID != expectDesc.ClusterUID || desc.Namespace != expectDesc.Namespace || desc.ServiceName != expectDesc.ServiceName || desc.Port != expectDesc.Port {
+			// Wrap the error to determine if the NEG desc conflict is due to cluster ID mismatch.
+			// When there is mismatch in NEG description,
+			// if the conflict occurs within the same cluster, NEG status should not be updated.
+			// otherwise, NEG status should have initialized=False condition.
+			if desc.ClusterUID != expectDesc.ClusterUID {
+				return false, fmt.Errorf("%w: expected description of NEG object %q/%q to be %+v, but got %+v", ErrClusterIDMismatch, zone, negName, expectDesc, desc)
+			}
+			if desc.Namespace != expectDesc.Namespace || desc.ServiceName != expectDesc.ServiceName || desc.Port != expectDesc.Port {
 				return false, fmt.Errorf("expected description of NEG object %q/%q to be %+v, but got %+v", zone, negName, expectDesc, desc)
 			}
 		}
