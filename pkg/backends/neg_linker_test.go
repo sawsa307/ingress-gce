@@ -206,6 +206,7 @@ func TestLinkBackendServiceToNEG(t *testing.T) {
 
 func TestGetNegSelfLinks(t *testing.T) {
 	t.Parallel()
+	flags.F.EnableMultiSubnetClusterPhase1 = true
 
 	groupKeys := []GroupKey{{Zone: testZone1}, {Zone: testZone2}}
 	namespace, svcName, port := "ns", "name", "port"
@@ -267,6 +268,17 @@ func TestGetNegSelfLinks(t *testing.T) {
 				createNegRef(testZone2, nonDefaultSubnetNegName, v1beta1.InactiveState),
 			},
 			expectedNegCount: 4,
+		},
+		{
+			desc:           "Get NEGs from SvcNeg, all NEGs are in active state, and containing NEGs from non-default subnet",
+			populateSvcNeg: true,
+			testNegRef: []v1beta1.NegObjectReference{
+				createNegRef(testZone1, defaultSubnetNegName, v1beta1.ActiveState),
+				createNegRef(testZone1, nonDefaultSubnetNegName, v1beta1.ToBeDeletedState),
+				createNegRef(testZone2, defaultSubnetNegName, v1beta1.ActiveState),
+				createNegRef(testZone2, nonDefaultSubnetNegName, v1beta1.ToBeDeletedState),
+			},
+			expectedNegCount: 2,
 		},
 		{
 			desc:             "Get NEGs from GCE",

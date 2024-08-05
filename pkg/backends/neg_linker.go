@@ -265,6 +265,9 @@ func getNegUrlsFromSvcneg(key string, svcNegLister cache.Indexer, logger klog.Lo
 	svcneg := obj.(*negv1beta1.ServiceNetworkEndpointGroup)
 
 	for _, negRef := range svcneg.Status.NetworkEndpointGroups {
+		if flags.F.EnableMultiSubnetClusterPhase1 && negRef.State == negv1beta1.ToBeDeletedState {
+			continue
+		}
 		negUrls = append(negUrls, negRef.SelfLink)
 	}
 	return negUrls, true
